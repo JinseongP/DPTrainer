@@ -1,0 +1,11 @@
+opt_einsum
+scipy
+pandas
+numpy
+matplotlib
+functorch
+kornia
+paramiko
+torchattacks
+torchdefenses==0.8.1
+opacus==1.2.0
