@@ -6,7 +6,6 @@ import pandas as pd
 import torch
 import csv
 
-import torch.nn as nn
 from torch.optim import *
 import torchvision.transforms as transforms
 import importlib
@@ -33,7 +32,7 @@ parser.add_argument('--optimizer', type=str, default='SGD(lr=1, momentum=0)', he
 parser.add_argument('--epochs', type=int, default=30, help='number of training epochs')
 parser.add_argument('--batch_size', type=int, default=4096, help='batch_size')
 parser.add_argument('--max_physical_batch_size', type=int, default=1024, help='number of max_physical_batch_size (for distributed training in DP)')
-parser.add_argument('--minimizer', type=str, default=None, help="[None, 'DPSAT(rho=0.0)' 'DPSATMomentum']")
+parser.add_argument('--minimizer', type=str, default=None, help="[None]")
 parser.add_argument('--rho', type=float, default=0.0, help='perturbation radius of sharpness-aware training. rho=0.0 for DPSGD.')
 parser.add_argument('--augmult', type=int, default=16, help='number of augmentations')
 
@@ -55,18 +54,13 @@ parser.add_argument('--gpu', type=int, default=0, help='gpu')
 
 # In-sample args
 parser.add_argument('--warm', default=True)
-parser.add_argument('--pretrained_dir', type=str, default="./saved/0908_CIFAR10_WRN16WS_WarmUp-FromDiffusion-SAM-Cosine-CutOut-SampleMean-PIL/last.pth")
-parser.add_argument('--public_data_dir', type=str, default="./data/cifar_cond_bothinsample_weight0.npz")
+parser.add_argument('--pretrained_dir', type=str, default="./saved/cifar-10-warmup/last.pth")
+parser.add_argument('--public_data_dir', type=str, default="./data/cifar-10-edm.npz")
 parser.add_argument('--public_indices_dir', type=str, default="./data/cifar-10-edm/sampled_index.pt")
-parser.add_argument('--extender', type=str, default=None,  help='[None, Ours-Ind, DOPE-SGD, Interpolation]')
+parser.add_argument('--extender', type=str, default=None,  help='[None, DOPE-SGD, Mirror-GD]')
 parser.add_argument('--public_batch_size', type=int, default=64, help='public batch_size')
-parser.add_argument('--public_rho', type=float, default=0.05, help='public rho for Ours')
-
-parser.add_argument('--augmentation', type=str, default=None,  help='[adv]')
-parser.add_argument('--regularizer', type=float, default=None,  help='reg coeff')
 
 if __name__ == '__main__':
-
     args = parser.parse_args()
     for arg_name, arg_value in vars(args).items():
         if arg_value == "None":
@@ -178,9 +172,6 @@ if __name__ == '__main__':
     if args.warm:
         print(f"Load pretrained model: {args.pretrained_dir}")
         rmodel.load_dict(args.pretrained_dir)
-    # if args.extender is None:
-    #     args.max_physical_batch_size = int(args.max_physical_batch_size/(args.augmult))
-
 
     ### Start Training
     trainer = tr.DpTrainer(args.name,rmodel)
@@ -190,25 +181,25 @@ if __name__ == '__main__':
     if args.warm:
         if args.extender is not None:
             trainer.fit(train_loader=train_loader, max_epoch=args.epochs, start_epoch=0,
-                optimizer=optimizer,public_loader=public_loader,extender=args.extender, rhoMax=args.public_rho, rhoMin=args.public_rho, adaptive=False,
+                optimizer=optimizer,public_loader=public_loader,extender=args.extender,
                 scheduler=None, scheduler_type="Epoch",
-                minimizer=args.minimizer, is_ema=True, augmult=args.augmult,
+                minimizer=None, is_ema=True, augmult=args.augmult,
                 save_path=SAVE_PATH, save_best={"Clean(Val)":"HB"},
-                save_type=None, save_overwrite=True, record_type="Epoch", augmentation=args.augmentation, normalize = NORMALIZE, regularizer=args.regularizer)
+                save_type=None, save_overwrite=True, record_type="Epoch")
         else:
             trainer.fit(train_loader=train_loader, max_epoch=args.epochs, start_epoch=0,
                 optimizer=optimizer, 
                 scheduler=None, scheduler_type="Epoch",
-                minimizer=args.minimizer, is_ema=True, augmult=args.augmult,
+                minimizer=None, is_ema=True, augmult=args.augmult,
                 save_path=SAVE_PATH, save_best={"Clean(Val)":"HB"},
-                save_type=None, save_overwrite=True, record_type="Epoch", augmentation=args.augmentation, normalize = NORMALIZE, regularizer=args.regularizer)            
+                save_type=None, save_overwrite=True, record_type="Epoch")            
     else:
         trainer.fit(train_loader=train_loader, max_epoch=args.epochs, start_epoch=0,
         optimizer=optimizer,
         scheduler=None, scheduler_type="Epoch",
-        minimizer=args.minimizer, is_ema=True, augmult=args.augmult,
+        minimizer=None, is_ema=True, augmult=args.augmult,
         save_path=SAVE_PATH, save_best={"Clean(Val)":"HB"},
-        save_type=None, save_overwrite=True, record_type="Epoch", augmentation=args.augmentation, normalize = NORMALIZE, regularizer=args.regularizer)            
+        save_type=None, save_overwrite=True, record_type="Epoch")            
     ### Evaluation
     rmodel.load_dict(SAVE_PATH+'/last.pth')
     last = rmodel.eval_accuracy(test_loader)

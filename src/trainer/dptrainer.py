@@ -97,7 +97,7 @@ class DpTrainer(Trainer):
             start_epoch=0, end_epoch=None, public_loader=None, extender=None,
             scheduler=None, scheduler_type=None, minimizer=None, is_ema=False, augmult=None,
             save_path=None, save_best=None, save_type="Epoch", 
-            save_overwrite=False, record_type="Epoch", augmentation=None, normalize=None, regularizer=None, **kwargs):
+            save_overwrite=False, record_type="Epoch", **kwargs):
 
         # Init record and save dicts
         self.rm = None
@@ -123,7 +123,7 @@ class DpTrainer(Trainer):
 
         self._init_optimizer(optimizer)
         self._init_schdeuler(scheduler, scheduler_type)
-        self._init_minimizer(minimizer, self.augmult)
+        # self._init_minimizer(minimizer, self.augmult) ##TODO: make DP versions
 
         if public_loader is not None:
             public_loader = _data(public_loader)
@@ -132,15 +132,6 @@ class DpTrainer(Trainer):
             self.check_cal_public = False
         
         self.extender = extender
-        if self.extender and "Ours" in self.extender:
-            self.extender_minimizer = SAM(self.optimizer, self.rmodel, rho = kwargs["rhoMax"])
-            self.rhoMax =  kwargs["rhoMax"]
-            self.rhoMin = kwargs["rhoMin"]
-            self.adaptive = kwargs["adaptive"]
-
-        self.augmentation = augmentation
-        self.normalize = normalize    
-        self.regularizer = regularizer
 
         # Check Save Path
         if save_path is not None:
@@ -235,15 +226,10 @@ class DpTrainer(Trainer):
                     self.losses += self.record_dict["CALoss"]
                     self.record_dict["CALoss"] = self.losses/(i+1)
                     
-                    # if self.minimizer:
-                    #     self.losses_p += self.record_dict["CALoss^p"]
-                    #     self.record_dict["CALoss^p"] = self.losses_p/(i+1)
-                    
                     self.record_dict["Acc(Tr)"] = 100 * float(self.correct) / self.total
                     self.rmodel.eval()
 
                     # Print Training Information
-
                     def manage_record():
                         if record_type is not None:
                             if self.rm is None:
@@ -325,35 +311,24 @@ class DpTrainer(Trainer):
     def _update_weight(self, *input):
         # SAM, ASAM, GSAM ...
         self.optimizer.zero_grad()
-        if self.minimizer is not None:
-            self.minimizer.step(lambda x: self.calculate_cost(x), *input)
-            
-        else:
-            for aug in range(self.augmult):
-                cost = self.calculate_cost(*input)
-                cost.backward()
-                with torch.no_grad():
-                    if aug == 0:
-                        for n, grad_sample in enumerate(self.optimizer.grad_samples):
-                            self.state["augmult"][n] = grad_sample.clone().detach()
-                        # for n, p in self.rmodel.named_parameters():###1. 
-                        #     if p.grad is None:
-                        #         continue
-                        #     self.state["augmult"][n] = p.grad_sample.clone().detach()
-                    else:
-                        for n, grad_sample in enumerate(self.optimizer.grad_samples):
-                            self.state["augmult"][n] += grad_sample.clone().detach()
-                        # for n, p in self.rmodel.named_parameters():###1. 
-                        #     if p.grad is None:
-                        #         continue
-                        #     self.state["augmult"][n] += p.grad_sample.clone().detach()
-                # if aug is not self.augmult-1:
-                self.optimizer.zero_grad()
-            with torch.no_grad():
-                for n, p in enumerate(self.optimizer.params):
-                    p.grad_sample = self.state["augmult"][n] / self.augmult      
 
-            self.optimizer.step()
+        for aug in range(self.augmult):
+            cost = self.calculate_cost(*input)
+            cost.backward()
+            with torch.no_grad():
+                if aug == 0:
+                    for n, grad_sample in enumerate(self.optimizer.grad_samples):
+                        self.state["augmult"][n] = grad_sample.clone().detach()
+                else:
+                    for n, grad_sample in enumerate(self.optimizer.grad_samples):
+                        self.state["augmult"][n] += grad_sample.clone().detach()
+
+            self.optimizer.zero_grad()
+        with torch.no_grad():
+            for n, p in enumerate(self.optimizer.params):
+                p.grad_sample = self.state["augmult"][n] / self.augmult      
+
+        self.optimizer.step()
 
 
         if self.is_ema:
@@ -367,282 +342,82 @@ class DpTrainer(Trainer):
         # SAM, ASAM, GSAM ...
         self.optimizer.zero_grad()
 
-        if self.minimizer is not None:
-            raise NotImplementedError
-        
-            if 'DPSAT' not in str(self.minimizer.__class__):
-                self.calculate_cost(*input).backward()
-                self.skip_calculate_cost = False
-            else:
-                self.skip_calculate_cost = True
-            self.minimizer.ascent_step()
-
-            self.calculate_ascent_cost(*input).backward()
+        if self.check_cal_public:
+            # store gradients of public data first
             
-            if self.augmult:
-                with torch.no_grad():
-                    for p in self.optimizer.params:
-                        grad_sample = self.optimizer._get_flat_grad_sample(p)
-                        p.grad_sample = grad_sample.reshape((-1,self.augmult) + grad_sample.shape[1:]).mean(axis=1)
-
-            self.minimizer.descent_step()
+            public_input = next(public_loader)
+            public_cost = self.calculate_cost(public_input, use_public=True)
+            public_cost.backward()
             
-        else:
-            if self.check_cal_public:
-                # store gradients of public data first
+            with torch.no_grad():
+                grads = []
+                for n, p in self.rmodel.named_parameters():
+                    if p.grad is None:
+                        continue
+                    grads.append(torch.norm(p.grad, p=2))
+                grad_norm = torch.norm(torch.stack(grads), p=2) + 1.e-16
 
-                if self.extender=="Ours-Clip":
-                    self.optimizer.zero_grad()
+                for n, p in self.rmodel.named_parameters():
+                    if p.grad is None:
+                        continue
+                    self.state[p]["grad"] = torch.clone(p.grad).detach() #* min(self.optimizer.max_grad_norm, grad_norm) / grad_norm
 
-                    public_input = next(public_loader)
-                    public_cost = self.calculate_cost(public_input, use_public=True)
-                    public_cost.backward()               
+            self.optimizer.zero_grad()
+            self.check_cal_public = False
 
-                    self.optimizer.clip_and_accumulate()
-                    for n, p in enumerate(self.optimizer.params):
-                        p.grad /= len(public_input[0])
-                        self.state["pub_grad"][p] = p.grad.clone().detach()
-                        # print(torch.sum(self.state["pub_grad"][p]))
-                    self.optimizer.zero_grad()
-
-
-                if self.extender=="Ours-Ind" or self.extender=="Ours-GSAM":
-                    rho = self.rhoMin + (self.rhoMax - self.rhoMin) * (1 - (self.epoch / self.max_epoch))
-                    for aug in range(self.augmult):
-                        public_input = next(public_loader)
-                        public_cost = self.calculate_cost(public_input, use_public=True)
-                        public_cost.backward()               
-
-                        if self.adaptive:
-                            self.eta = 0.01
-                            with torch.no_grad():
-                                wgrads = []
-                                for n, p in self.rmodel.named_parameters():
-                                    if p.grad is None:
-                                        continue
-                                    # t_w = self.state[p].get("pub_eps_"+str(aug))
-                                    # if t_w is None:
-                                    t_w = torch.clone(p).detach()
-                                    self.state["pub_eps_"+str(aug)][p] = t_w
-                                    if 'weight' in n:
-                                        t_w[...] = p[...]
-                                        t_w.abs_().add_(self.eta)
-                                        p.grad.mul_(t_w)
-                                    wgrads.append(torch.norm(p.grad, p=2))
-                                wgrad_norm = torch.norm(torch.stack(wgrads), p=2) + 1.e-16
-                                for n, p in self.rmodel.named_parameters():
-                                    if p.grad is None:
-                                        continue
-                                    t_w = self.state["pub_eps_"+str(aug)].get(p)
-                                    if 'weight' in n:
-                                        p.grad.mul_(t_w)
-                                    eps = t_w
-                                    eps[...] = p.grad[...]
-                                    eps.mul_(rho / wgrad_norm)
-
-                        else:
-                            with torch.no_grad():
-                                grads = []
-                                for n, p in self.rmodel.named_parameters():
-                                    if p.grad is None:
-                                        continue
-                                    grads.append(torch.norm(p.grad, p=2))
-                                grad_norm = torch.norm(torch.stack(grads), p=2) + 1.e-16
-                                self.state["grad_norm_"+str(aug)] = grad_norm
-                                for n, p in self.rmodel.named_parameters():
-                                    if p.grad is None:
-                                        continue
-                                    self.state["pub_eps_"+str(aug)][p] = torch.clone(p.grad).detach() * (rho / grad_norm)
-                                    #min(self.optimizer.max_grad_norm, grad_norm) / grad_norm ##TODO: rhoMax
-                                
-                        self.optimizer.zero_grad()
-
-                else:
-                    public_input = next(public_loader)
-                    if self.extender=="Ours":
-                        public_cost = self.calculate_cost(public_input, use_public=True)
-                        public_cost.backward()
-                        self.extender_minimizer.ascent_step()
-
-                    public_cost = self.calculate_cost(public_input, use_public=True)
-                    public_cost.backward()
-                    
-                    with torch.no_grad():
-                        grads = []
-                        for n, p in self.rmodel.named_parameters():
-                            if p.grad is None:
-                                continue
-                            grads.append(torch.norm(p.grad, p=2))
-                        grad_norm = torch.norm(torch.stack(grads), p=2) + 1.e-16
-
-                        for n, p in self.rmodel.named_parameters():
-                            if p.grad is None:
-                                continue
-                            self.state[p]["grad"] = torch.clone(p.grad).detach() #* min(self.optimizer.max_grad_norm, grad_norm) / grad_norm
-
-                self.optimizer.zero_grad()
-                self.check_cal_public = False
-
-            # use private data
-            if self.augmult:
-                for aug in range(self.augmult):
-                    if self.extender=="Ours-Ind":
-                        with torch.no_grad():
-                            for n, p in self.rmodel.named_parameters():
-                                if p.grad is None:
-                                    continue
-                                if aug > 0: # we cannot subtract for the first augmult
-                                    p.sub_(self.state["pub_eps_"+str(aug-1)][p])
-                                p.add_(self.state["pub_eps_"+str(aug)][p]) ## move i th ascent and and remove i-1 th descent
-                    
-                    cost = self.calculate_cost(*input)
-                    cost.backward()
-                    
-                    if self.extender=="Ours-GSAM":         
-                        self.state["descent"] = {}
-                        grads = []
-                        for n, p in enumerate(self.optimizer.params):
-                            self.state["descent"][p] = p.grad_sample.clone().detach()
-                            grads.append(torch.norm(p.grad_sample, p=2))
-                        grad_norm = torch.norm(torch.stack(grads), p=2) + 1.e-16
-
-
-                        self.descent_norm = grad_norm
-                        self.ascent_norm = self.state["grad_norm_"+str(aug)]
-                        
-                        ascents = self.state["pub_eps_"+str(aug)]
-                        descents = self.state["descent"]
-                        inner_prod = inner_product(descents, ascents)
-
-                        # self.ascent_norm = grad_norm
-                        # self.descent_norm = self.state["grad_norm_"+str(aug)]
-                        
-                        # descents = self.state["pub_eps_"+str(aug)]
-                        # ascents = self.state["descent"]
-                        # inner_prod = inner_product(ascents, descents)
-                        
-                        # get cosine
-                        cosine = inner_prod / (self.ascent_norm * self.descent_norm + 1.e-16)
-                        
-                        rho = self.rhoMin + (self.rhoMax - self.rhoMin) * (1 - (self.epoch / self.max_epoch))
-                        for n, p in enumerate(self.optimizer.params):
-                            vertical = ascents[p] - cosine * self.ascent_norm * descents[p] / (self.descent_norm + 1.e-16)
-                            p.grad_sample.sub_(rho*vertical)
-
-                    with torch.no_grad():
-                        if aug == 0:
-                            for n, grad_sample in enumerate(self.optimizer.grad_samples):
-                                self.state["augmult"][n] = grad_sample.clone().detach()
-                            # for n, p in self.rmodel.named_parameters():###1. 
-                            #     if p.grad is None:
-                            #         continue
-                            #     self.state["augmult"][n] = p.grad_sample.clone().detach()
-                        else:
-                            for n, grad_sample in enumerate(self.optimizer.grad_samples):
-                                self.state["augmult"][n] += grad_sample.clone().detach()
-                            # for n, p in self.rmodel.named_parameters():###1. 
-                            #     if p.grad is None:
-                            #         continue
-                            #     self.state["augmult"][n] += p.grad_sample.clone().detach()
-                    # if aug is not self.augmult-1:
-                    self.optimizer.zero_grad()
-                with torch.no_grad():
-                    for n, p in enumerate(self.optimizer.params):
-                        p.grad_sample = self.state["augmult"][n] / self.augmult
-
-
-                    # for grad_sample in self.optimizer.grad_samples:
-                    #     p.grad_sample = self.state["augmult"][n] / self.augmult
-                    #     if self.extender=="DOPE-SGD" or self.extender=="Ours": 
-                    #         p.grad_sample.sub_(self.state[p]["grad"])
-
-            else:
+        # use private data
+        if self.augmult:
+            for aug in range(self.augmult):               
                 cost = self.calculate_cost(*input)
                 cost.backward()
-
-            if self.extender=="DOPE-SGD": #Effectively Using Public Data in Privacy Preserving Machine Learning
+                
                 with torch.no_grad():
-                    for p in self.optimizer.params:
-                        p.grad_sample.sub_(self.state[p]["grad"])
+                    if aug == 0:
+                        for n, grad_sample in enumerate(self.optimizer.grad_samples):
+                            self.state["augmult"][n] = grad_sample.clone().detach()
+                    else:
+                        for n, grad_sample in enumerate(self.optimizer.grad_samples):
+                            self.state["augmult"][n] += grad_sample.clone().detach()
 
-            is_last_batch =  self.optimizer.pre_step() # clip + noise addition
-            if self.extender =="Ours-Ind":
-                # Calcuate ascent direction in mini-batch with diff each public mini-batch
-                with torch.no_grad():
+                self.optimizer.zero_grad()
+            with torch.no_grad():
+                for n, p in enumerate(self.optimizer.params):
+                    p.grad_sample = self.state["augmult"][n] / self.augmult
+
+
+        else:
+            cost = self.calculate_cost(*input)
+            cost.backward()
+
+        if self.extender=="DOPE-SGD": #Effectively Using Public Data in Privacy Preserving Machine Learning
+            with torch.no_grad():
+                for p in self.optimizer.params:
+                    p.grad_sample.sub_(self.state[p]["grad"])
+
+        is_last_batch =  self.optimizer.pre_step() # clip + noise addition
+        if is_last_batch:
+            with torch.no_grad():
+                if self.extender =="Mirror-GD":
+                    beta= torch.cos(torch.Tensor([3.1415*(self.epoch/self.max_epoch)/2 /10])).cuda()
                     for n, p in self.rmodel.named_parameters():
                         if p.grad is None:
                             continue
-                        p.sub_(self.state["pub_eps_"+str(self.augmult-1)][p])
-
-            if is_last_batch:
-                with torch.no_grad():
-                    if self.extender =="Mirror-GD":
-                        beta= torch.cos(torch.Tensor([3.1415*(self.epoch/self.max_epoch)/2 /10])).cuda()
-                        for n, p in self.rmodel.named_parameters():
-                            if p.grad is None:
-                                continue
-                            """
-                            #### uzn
-                            p.grad *= max(1, torch.linalg.norm(self.state[p]["grad"])/torch.linalg.norm(p.grad))
-                            print("beta:", beta, "private:", torch.linalg.norm(p.grad), "public:", torch.linalg.norm(self.state[p]["grad"]))
-                            ####
-                            """
-                            p.grad.mul_(beta)
-                            p.grad.add_((1-beta)*self.state[p]["grad"])
-                        
-                    elif self.extender=="DOPE-SGD": #Effectively Using Public Data in Privacy Preserving Machine Learning
-                        for n, p in self.rmodel.named_parameters():###1. 
-                            if p.grad is None:
-                                continue
-                            p.grad.add_(self.state[p]["grad"])
-
-                    elif self.extender =="Ours":
-                        for n, p in self.rmodel.named_parameters():
-                            if p.grad is None:
-                                continue
-                            p.sub_(self.extender_minimizer.state[p]["eps"])
-                            p.grad.add_(self.state[p]["grad"])
-                    elif self.extender == "Ours-Clip":
-                        for n, p in self.rmodel.named_parameters():
-                            if p.grad is None:
-                                continue
-                            p.grad.add_(self.state["pub_grad"][p])
-                    elif self.extender=="DPMD":
-                        #Public Data-Assisted Mirror Descent for Private Model Training
-                        raise NotImplementedError
+                        p.grad.mul_(beta)
+                        p.grad.add_((1-beta)*self.state[p]["grad"])
                     
-                    elif self.extender =="AdaDPS":
-                        raise NotImplementedError
-                    elif "Ours" in self.extender:
-                        pass
-                    else:
-                        raise NotImplementedError("Choose proper extender.")
+                elif self.extender=="DOPE-SGD": #Effectively Using Public Data in Privacy Preserving Machine Learning
+                    for n, p in self.rmodel.named_parameters():###1. 
+                        if p.grad is None:
+                            continue
+                        p.grad.add_(self.state[p]["grad"])
+                else:
+                    raise NotImplementedError("Choose proper extender.")
 
-                self.optimizer.original_optimizer.step()
-                self.check_cal_public = True
+            self.optimizer.original_optimizer.step()
+            self.check_cal_public = True
 
         if self.is_ema:
             self.ema.update()
-
-    # def calculate_ascent_cost(self, train_data, use_public=False):
-    #     r"""
-    #     Overridden.
-    #     """
-    #     images, labels = train_data
-    #     images = images.to(self.device)
-    #     labels = labels.to(self.device)
-    #     augmentation = DataAugmentation()
-    #     images = augmentation(images)
-    #     logits = self.rmodel(images)
-    #     cost = nn.CrossEntropyLoss()(logits, labels)
-    #     self.record_dict["CALoss^p"] = cost.item()
-
-    #     if self.skip_calculate_cost:
-    #         _, pre = torch.max(logits.data, 1)
-    #         self.total += pre.size(0)
-    #         self.correct += (pre == labels).sum()        
-
-    #     return cost   
     
     def calculate_cost(self, train_data, use_public=False):
         r"""
@@ -653,34 +428,7 @@ class DpTrainer(Trainer):
         images = images.to(self.device)
         labels = labels.to(self.device)
 
-        if self.augmult and self.augmentation=="adv":# and self.epoch>10:
-            augmentation = DataAugmentation()
-            images = augmentation(images)
-            standard_model = deepcopy(self.rmodel.model)#.to_standard_module()
-            standard_model.remove_hooks() # not to store individual gradients
-            atk = torchattacks.PGD(standard_model, eps=0.01/255, alpha=0.01/255, steps=1, random_start=True)
-            # If inputs were normalized, then
-            atk.set_normalization_used(mean=self.normalize['mean'], std=self.normalize['std'])
-            atk.set_mode_targeted_by_label(quiet=True)
-            target_labels = (labels) # loss descending images towards original labels
-            adv_images = atk(images, target_labels)
-            logits = self.rmodel(adv_images)
-            cost = nn.CrossEntropyLoss()(logits, labels)
-
-        elif self.augmult and self.regularizer:#MAN
-            augmentation = DataAugmentation()
-            images = augmentation(images)
-            logits, tmp_var_ = self.rmodel(images) # the model should be wrapped with OpenCLIPMAN
-            probs = F.softmax(logits, dim=1)
-            onehot_labels = torch.nn.functional.one_hot(labels)
-            cost = nn.CrossEntropyLoss()(logits, labels)
-            ## for MAN
-            loss_var_algo = 0.0
-            for var_val in tmp_var_:
-                loss_var_algo += torch.mean(var_val)
-            cost += self.regularizer * loss_var_algo
-
-        elif self.augmult:# and self.extender is None:
+        if self.augmult:
             augmentation = DataAugmentation()
             images = augmentation(images)
             logits = self.rmodel(images)
@@ -688,12 +436,6 @@ class DpTrainer(Trainer):
             onehot_labels = torch.nn.functional.one_hot(labels)
             cost = nn.CrossEntropyLoss()(logits, labels)
 
-        # elif self.augmult and not use_public:
-        #     augmentation = DataAugmentation()
-        #     images = augmentation(images)
-        #     logits = self.rmodel(images)
-        #     probs = F.softmax(logits, dim=1)
-        #     cost = nn.CrossEntropyLoss()(logits, labels)
         else:
             logits = self.rmodel(images)
             cost = nn.CrossEntropyLoss()(logits, labels)
