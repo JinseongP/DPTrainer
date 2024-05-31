@@ -55,8 +55,8 @@ parser.add_argument('--gpu', type=int, default=0, help='gpu')
 # In-sample args
 parser.add_argument('--warm', default=True)
 parser.add_argument('--pretrained_dir', type=str, default="./saved/cifar-10-warmup/last.pth")
-parser.add_argument('--public_data_dir', type=str, default="./data/cifar-10-edm.npz")
-parser.add_argument('--public_indices_dir', type=str, default="./data/cifar-10-edm/sampled_index.pt")
+parser.add_argument('--public_data_dir', type=str, default="./data/cifar-10-edm/cifar10_data_sampled_weight0.npz")
+parser.add_argument('--public_indices_dir', type=str, default="./data/cifar-10-edm/cifar10_data_sampled_index.pt")
 parser.add_argument('--extender', type=str, default=None,  help='[None, DOPE-SGD, Mirror-GD]')
 parser.add_argument('--public_batch_size', type=int, default=64, help='public batch_size')
 
