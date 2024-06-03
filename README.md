@@ -26,13 +26,13 @@ Official PyTorch implementation of "In-distribution Public Data Synthesis with D
 
      ```
    sudo docker run -i -t --ipc=host --name dptrainer--gpus=all anibali/pytorch:1.13.0-cuda11.8 /bin/bash
-     ```
+   ```
 
 2. Install the required packages
 
      ```
    pip install -r requirements.txt
-     ```
+   ```
 
    
 
@@ -129,4 +129,4 @@ CVPR 2024
 
 - The backbone trainer architecture of this code is based on [adversarial-defenses-pytorch](https://github.com/Harry24k/adversarial-defenses-pytorch). For better usage of the trainer, please refer to adversarial-defenses-pytorch. 
 
-- Furthermore, we use [Opacus](https://github.com/pytorch/opacus) for differentially private training.
+- Furthermore, we use [Opacus](https://github.com/pytorch/opacus) for differentially private training, building upon on trainer library of [DPSAT](https://github.com/JinseongP/DPSAT).
