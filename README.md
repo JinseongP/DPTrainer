@@ -7,7 +7,7 @@ Official PyTorch implementation of "In-distribution Public Data Synthesis with D
 **[Jinseong Park](https://jinseongp.github.io/) \*, [Yujin Choi](https://scholar.google.com/citations?user=3u0-O2sAAAAJ&hl=en) \*, and Jaewook Lee**   
 <sup> * Equal contribution </sup> 
 
-| [paper](https://jinseongp.github.io/assets/files/CVPR2024_In-distribution%20Public%20Data%20Synthesis%20with%20Diffusion%20Models%20for%20Differentially%20Private%20Image%20Classification.pdf) | 
+| [paper link](https://openaccess.thecvf.com/content/CVPR2024/html/Park_In-distribution_Public_Data_Synthesis_with_Diffusion_Models_for_Differentially_Private_CVPR_2024_paper.html) | 
 
 
 
@@ -120,9 +120,14 @@ For details of each parameter, please refer to `main.py`.
 ## 4. Citation
 
 ```
-Will be updated
-
-CVPR 2024
+@InProceedings{park2024indistribution,
+    author    = {Park, Jinseong and Choi, Yujin and Lee, Jaewook},
+    title     = {In-distribution Public Data Synthesis with Diffusion Models for Differentially Private Image Classification},
+    booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+    month     = {June},
+    year      = {2024},
+    pages     = {12236-12246}
+}
 ```
 
 
