@@ -105,7 +105,7 @@ Follow the instructions of `/examples/cifar10_warmup.ipynb` and  `/examples/cifa
 
 
 
-## 3. Training EDM model with 4\% data
+## 3. Training DP models with DP-SGD
 
   ```
 !python main.py --gpu {GPU} --max_grad_norm {MAX_GRAD_NORM} --epsilon {EPSILON} --delta {DELTA}  --data {DATA} --optimizer "{OPTIMIZER}" --epochs {EPOCHS} --batch_size {BATCH_SIZE} --max_physical_batch_size {MAX_PHYSICAL_BATCH_SIZE} --model_name {MODEL_NAME}  --n_class {N_CLASSES} --augmult {N_AUGMULT} --path {PATH} --name {NAME} --memo {MEMO} --public_batch_size {PUBLIC_BATCH_SIZE} --extender {EXTENDER}  --pretrained_dir {WARMUP_PATH}
